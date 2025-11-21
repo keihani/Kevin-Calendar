@@ -205,7 +205,9 @@ export default function App() {
   const nextStartTimeRef = useRef<number>(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const recognitionRef = useRef<any>(null);
-  const shouldRestartWaitingRef = useRef<boolean>(false);
+  
+  // Track if the AI feature is globally enabled by the user
+  const isVoiceEnabledRef = useRef<boolean>(false);
 
   // --- Effects ---
   useEffect(() => {
@@ -378,10 +380,11 @@ export default function App() {
     if (!SpeechRecognition) {
         alert("Your browser does not support Speech Recognition. Please use Chrome.");
         setAiMode('OFF');
+        isVoiceEnabledRef.current = false;
         return;
     }
 
-    // If we are already active or listening, don't double up, but we need to be careful with state
+    // If we are already listening, clean up first
     if (recognitionRef.current) {
         try { recognitionRef.current.stop(); } catch(e) {}
     }
@@ -397,8 +400,12 @@ export default function App() {
             const transcript = results[i][0].transcript.toLowerCase();
             if (transcript.includes("hey kevin")) {
                 console.log("Wake word detected!");
-                recognition.stop(); // Stop listening for wake word
-                connectToGeminiLive(); // Start Live API
+                // Stop listener completely before starting Gemini to avoid conflict
+                recognition.onend = null; 
+                recognition.stop();
+                recognitionRef.current = null;
+                
+                connectToGeminiLive();
                 break;
             }
         }
@@ -407,14 +414,14 @@ export default function App() {
     recognition.onerror = (event: any) => {
         if (event.error === 'not-allowed') {
             setAiMode('OFF');
+            isVoiceEnabledRef.current = false;
             alert("Microphone access blocked.");
         }
-        // Ignore 'no-speech' errors, just keep listening
     };
 
-    // If it stops for some reason (not triggered by us), restart it if we are still in WAITING mode
+    // Auto-restart if it stops unexpectedly but feature is still enabled
     recognition.onend = () => {
-        if (shouldRestartWaitingRef.current) {
+        if (isVoiceEnabledRef.current) {
              try { recognition.start(); } catch(e) {}
         }
     };
@@ -424,24 +431,14 @@ export default function App() {
     try {
         recognition.start();
         setAiMode('WAITING');
-        shouldRestartWaitingRef.current = true;
     } catch (e) {
         console.error("Failed to start recognition", e);
         setAiMode('OFF');
-    }
-  };
-
-  const stopWakeWordListener = () => {
-    shouldRestartWaitingRef.current = false;
-    if (recognitionRef.current) {
-        recognitionRef.current.stop();
-        recognitionRef.current = null;
+        isVoiceEnabledRef.current = false;
     }
   };
 
   const connectToGeminiLive = async () => {
-    // Ensure wake word listener is completely stopped before grabbing mic for Gemini
-    stopWakeWordListener();
     setAiMode('ACTIVE');
 
     try {
@@ -460,13 +457,15 @@ export default function App() {
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
           responseModalities: [Modality.AUDIO],
+          inputAudioTranscription: {}, // Enable receiving the user's transcript
           systemInstruction: `You are a helpful assistant for "Kevin Task Manager". 
           Current Date: ${new Date().toISOString().split('T')[0]}.
           You can help the user manage projects and tasks.
           You can create, delete, and schedule tasks and projects using the provided tools.
           When asked to select a task, select the project containing it.
           If the user says "delete this project" or "delete the selected project", use the deleteCurrentProject tool.
-          If the user asks to perform multiple actions (e.g. "create 2 tasks"), call the tools multiple times sequentially.`,
+          If the user asks to perform multiple actions (e.g. "create 2 tasks"), call the tools multiple times sequentially.
+          If the user says "Bye Kevin" or "Goodbye", acknowledge briefly and then the session will end.`,
           tools: tools,
         },
         callbacks: {
@@ -486,7 +485,17 @@ export default function App() {
                 processor.connect(ctx.destination);
             },
             onmessage: async (msg: LiveServerMessage) => {
-                // Handle Tool Calls
+                // 1. Check for "Bye Kevin" command in user input
+                if (msg.serverContent?.inputTranscription) {
+                    const text = msg.serverContent.inputTranscription.text;
+                    if (text && text.toLowerCase().includes("bye kevin")) {
+                         console.log("Bye Kevin detected, closing session...");
+                         sessionPromise.then(s => s.close());
+                         // We don't return here, we let it play any final audio (like "Goodbye!")
+                    }
+                }
+
+                // 2. Handle Tool Calls
                 if (msg.toolCall) {
                     const responses = [];
                     
@@ -678,7 +687,7 @@ export default function App() {
                     sessionPromise.then(session => session.sendToolResponse({ functionResponses: responses }));
                 }
 
-                // Handle Audio Output
+                // 3. Handle Audio Output
                 const base64Audio = msg.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
                 if (base64Audio) {
                     const ctx = audioContextRef.current!;
@@ -698,9 +707,8 @@ export default function App() {
             },
             onclose: () => {
                 console.log("Gemini Session Closed");
-                // When session ends, go back to waiting for wake word if feature is still enabled
-                if (shouldRestartWaitingRef.current) {
-                    // We need a slight delay to let the mic release from the previous getUserMedia call
+                // If the global voice feature is still enabled, go back to listening for "Hey Kevin"
+                if (isVoiceEnabledRef.current) {
                     setTimeout(() => {
                         startWakeWordListener();
                     }, 500);
@@ -710,8 +718,7 @@ export default function App() {
             },
             onerror: (e) => {
                 console.error("Gemini Live Error", e);
-                // On error, try to go back to waiting
-                if (shouldRestartWaitingRef.current) {
+                if (isVoiceEnabledRef.current) {
                     setTimeout(() => {
                          startWakeWordListener();
                     }, 500);
@@ -726,18 +733,23 @@ export default function App() {
 
     } catch (e) {
         console.error("Failed to connect to AI", e);
-        setAiMode('OFF');
-        startWakeWordListener(); // Fallback
+        // Fallback if connection fails
+        if (isVoiceEnabledRef.current) {
+            startWakeWordListener();
+        } else {
+            setAiMode('OFF');
+        }
     }
   };
 
   const toggleAi = () => {
     if (aiMode === 'OFF') {
-        // Start process: OFF -> WAITING
+        // Turn ON
+        isVoiceEnabledRef.current = true;
         startWakeWordListener();
     } else {
-        // Stop process: WAITING/ACTIVE -> OFF
-        shouldRestartWaitingRef.current = false; // Prevent auto-restart
+        // Turn OFF
+        isVoiceEnabledRef.current = false;
         fullAiCleanup();
         setAiMode('OFF');
     }
