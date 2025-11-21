@@ -22,7 +22,7 @@ import { Modal } from './components/ui/Modal';
 import { Button } from './components/ui/Button';
 
 // Icons
-import { Download, ChevronLeft, ChevronRight, Calendar as CalendarIcon, Trash2, Mic, MicOff } from 'lucide-react';
+import { Download, ChevronLeft, ChevronRight, Calendar as CalendarIcon, Trash2, Mic, MicOff, Ear } from 'lucide-react';
 
 // --- Audio Helper Functions ---
 function createBlob(data: Float32Array): GenAIBlob {
@@ -174,6 +174,8 @@ const tools: { functionDeclarations: FunctionDeclaration[] }[] = [
   }
 ];
 
+type AiMode = 'OFF' | 'WAITING' | 'ACTIVE';
+
 export default function App() {
   // --- State ---
   const [data, setData] = useState<AppData>({ projects: [], calendar: {} });
@@ -192,9 +194,18 @@ export default function App() {
   const [selectedDateForModal, setSelectedDateForModal] = useState<Date | null>(null);
 
   // AI State
-  const [isAiConnected, setIsAiConnected] = useState(false);
+  const [aiMode, setAiMode] = useState<AiMode>('OFF');
   const dataRef = useRef<AppData>(data); // Ref to access current data in callbacks
   const expandedProjectIdRef = useRef<string | null>(expandedProjectId); // Ref for currently selected project
+  
+  // AI Logic Refs
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const inputContextRef = useRef<AudioContext | null>(null);
+  const sessionRef = useRef<any>(null);
+  const nextStartTimeRef = useRef<number>(0);
+  const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const recognitionRef = useRef<any>(null);
+  const shouldRestartWaitingRef = useRef<boolean>(false);
 
   // --- Effects ---
   useEffect(() => {
@@ -215,6 +226,13 @@ export default function App() {
   useEffect(() => {
     expandedProjectIdRef.current = expandedProjectId;
   }, [expandedProjectId]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+        fullAiCleanup();
+    };
+  }, []);
 
   // --- Handlers: Project ---
   const handleSaveProject = (e: React.FormEvent<HTMLFormElement>) => {
@@ -337,13 +355,95 @@ export default function App() {
   };
 
   // --- AI Integration ---
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const inputContextRef = useRef<AudioContext | null>(null);
-  const sessionRef = useRef<any>(null);
-  const nextStartTimeRef = useRef<number>(0);
-  const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
 
-  const connectToAi = async () => {
+  const fullAiCleanup = () => {
+    if (sessionRef.current) {
+        sessionRef.current.then((s: any) => s.close()).catch(() => {});
+        sessionRef.current = null;
+    }
+    if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+    }
+    inputContextRef.current?.close();
+    audioContextRef.current?.close();
+    inputContextRef.current = null;
+    audioContextRef.current = null;
+  };
+
+  const startWakeWordListener = () => {
+    // Browser Speech Recognition (Web Speech API)
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+        alert("Your browser does not support Speech Recognition. Please use Chrome.");
+        setAiMode('OFF');
+        return;
+    }
+
+    // If we are already active or listening, don't double up, but we need to be careful with state
+    if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch(e) {}
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event: any) => {
+        const results = event.results;
+        for (let i = event.resultIndex; i < results.length; i++) {
+            const transcript = results[i][0].transcript.toLowerCase();
+            if (transcript.includes("hey kevin")) {
+                console.log("Wake word detected!");
+                recognition.stop(); // Stop listening for wake word
+                connectToGeminiLive(); // Start Live API
+                break;
+            }
+        }
+    };
+
+    recognition.onerror = (event: any) => {
+        if (event.error === 'not-allowed') {
+            setAiMode('OFF');
+            alert("Microphone access blocked.");
+        }
+        // Ignore 'no-speech' errors, just keep listening
+    };
+
+    // If it stops for some reason (not triggered by us), restart it if we are still in WAITING mode
+    recognition.onend = () => {
+        if (shouldRestartWaitingRef.current) {
+             try { recognition.start(); } catch(e) {}
+        }
+    };
+
+    recognitionRef.current = recognition;
+    
+    try {
+        recognition.start();
+        setAiMode('WAITING');
+        shouldRestartWaitingRef.current = true;
+    } catch (e) {
+        console.error("Failed to start recognition", e);
+        setAiMode('OFF');
+    }
+  };
+
+  const stopWakeWordListener = () => {
+    shouldRestartWaitingRef.current = false;
+    if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+    }
+  };
+
+  const connectToGeminiLive = async () => {
+    // Ensure wake word listener is completely stopped before grabbing mic for Gemini
+    stopWakeWordListener();
+    setAiMode('ACTIVE');
+
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
@@ -365,12 +465,12 @@ export default function App() {
           You can help the user manage projects and tasks.
           You can create, delete, and schedule tasks and projects using the provided tools.
           When asked to select a task, select the project containing it.
-          If the user says "delete this project" or "delete the selected project", use the deleteCurrentProject tool.`,
+          If the user says "delete this project" or "delete the selected project", use the deleteCurrentProject tool.
+          If the user asks to perform multiple actions (e.g. "create 2 tasks"), call the tools multiple times sequentially.`,
           tools: tools,
         },
         callbacks: {
             onopen: () => {
-                setIsAiConnected(true);
                 // Setup Input Stream
                 const ctx = inputContextRef.current!;
                 const source = ctx.createMediaStreamSource(stream);
@@ -389,18 +489,26 @@ export default function App() {
                 // Handle Tool Calls
                 if (msg.toolCall) {
                     const responses = [];
+                    
+                    // Create a temporary copy of state to apply sequential updates
+                    let tempState = {
+                        projects: [...dataRef.current.projects],
+                        calendar: { ...dataRef.current.calendar }
+                    };
+                    
+                    // Helper to commit temp state to React State at the end
+                    let hasChanges = false;
+
                     for (const fc of msg.toolCall.functionCalls) {
                         const { name, args, id } = fc;
                         let result = { status: 'ok' };
-                        
+                        hasChanges = true;
+
                         try {
-                            // Execute Tool Logic against current data (dataRef.current)
                             if (name === 'createProject') {
                                 const pName = (args as any).projectName;
                                 const desc = (args as any).description || '';
                                 let color = (args as any).color || '#3b82f6';
-                                
-                                // Simple color mapping if user says "Red"
                                 const colors: Record<string, string> = {
                                     red: '#ef4444', blue: '#3b82f6', green: '#10b981', 
                                     yellow: '#f59e0b', purple: '#8b5cf6', orange: '#f97316',
@@ -415,15 +523,17 @@ export default function App() {
                                     details: desc,
                                     tasks: []
                                 };
-                                setData(prev => ({ ...prev, projects: [...prev.projects, newProject] }));
-                                setExpandedProjectId(newProject.id);
+                                tempState.projects.push(newProject);
                                 result = { status: `Created project: ${pName}` };
-                            } else if (name === 'createTask') {
+                                // We can't easily expand the project in temp state UI logic, but we can track the ID
+                                expandedProjectIdRef.current = newProject.id;
+                            } 
+                            else if (name === 'createTask') {
                                 const pName = (args as any).projectName.toLowerCase();
                                 const tTitle = (args as any).taskTitle;
                                 const desc = (args as any).description || '';
                                 
-                                const project = dataRef.current.projects.find(p => p.name.toLowerCase().includes(pName));
+                                const project = tempState.projects.find(p => p.name.toLowerCase().includes(pName));
                                 if (project) {
                                     const newTask: Task = {
                                         id: crypto.randomUUID(),
@@ -431,41 +541,57 @@ export default function App() {
                                         title: tTitle,
                                         description: desc
                                     };
-                                    setData(prev => ({
-                                        ...prev,
-                                        projects: prev.projects.map(p => {
-                                            if (p.id !== project.id) return p;
-                                            return { ...p, tasks: [...p.tasks, newTask] };
-                                        })
-                                    }));
+                                    project.tasks.push(newTask);
                                     result = { status: `Added task "${tTitle}" to project "${project.name}"` };
                                 } else {
                                     result = { status: `Project "${pName}" not found` };
                                 }
-                            } else if (name === 'selectProject') {
+                            }
+                            else if (name === 'selectProject') {
                                 const pName = (args as any).projectName.toLowerCase();
-                                const project = dataRef.current.projects.find(p => p.name.toLowerCase().includes(pName));
+                                const project = tempState.projects.find(p => p.name.toLowerCase().includes(pName));
                                 if (project) {
-                                    setExpandedProjectId(project.id);
+                                    expandedProjectIdRef.current = project.id;
                                     result = { status: `Selected project: ${project.name}` };
+                                    // Note: We don't change tempState structure for selection, handled via setExpandedProjectId later
                                 } else {
                                     result = { status: 'Project not found' };
                                 }
-                            } else if (name === 'deleteProject') {
+                            }
+                            else if (name === 'deleteProject') {
                                 const pName = (args as any).projectName.toLowerCase();
-                                const project = dataRef.current.projects.find(p => p.name.toLowerCase().includes(pName));
-                                if (project) {
-                                    handleDeleteProject(project.id);
+                                const projectIndex = tempState.projects.findIndex(p => p.name.toLowerCase().includes(pName));
+                                if (projectIndex > -1) {
+                                    const project = tempState.projects[projectIndex];
+                                    const taskIds = project.tasks.map(t => t.id);
+                                    
+                                    // Remove from calendar
+                                    Object.keys(tempState.calendar).forEach(date => {
+                                        tempState.calendar[date] = tempState.calendar[date].filter(tid => !taskIds.includes(tid));
+                                        if (tempState.calendar[date].length === 0) delete tempState.calendar[date];
+                                    });
+                                    
+                                    tempState.projects.splice(projectIndex, 1);
                                     result = { status: `Deleted project: ${project.name}` };
                                 } else {
                                     result = { status: 'Project not found' };
                                 }
-                            } else if (name === 'deleteCurrentProject') {
+                            }
+                            else if (name === 'deleteCurrentProject') {
                                 const currentId = expandedProjectIdRef.current;
                                 if (currentId) {
-                                    const project = dataRef.current.projects.find(p => p.id === currentId);
-                                    if (project) {
-                                        handleDeleteProject(currentId);
+                                    const projectIndex = tempState.projects.findIndex(p => p.id === currentId);
+                                    if (projectIndex > -1) {
+                                        const project = tempState.projects[projectIndex];
+                                        const taskIds = project.tasks.map(t => t.id);
+
+                                        Object.keys(tempState.calendar).forEach(date => {
+                                            tempState.calendar[date] = tempState.calendar[date].filter(tid => !taskIds.includes(tid));
+                                            if (tempState.calendar[date].length === 0) delete tempState.calendar[date];
+                                        });
+
+                                        tempState.projects.splice(projectIndex, 1);
+                                        expandedProjectIdRef.current = null;
                                         result = { status: `Deleted selected project: ${project.name}` };
                                     } else {
                                         result = { status: 'Project ID found but data missing' };
@@ -473,50 +599,57 @@ export default function App() {
                                 } else {
                                     result = { status: 'No project is currently selected' };
                                 }
-                            } else if (name === 'deleteTask') {
+                            }
+                            else if (name === 'deleteTask') {
                                 const tTitle = (args as any).taskTitle.toLowerCase();
                                 let found = false;
-                                for (const p of dataRef.current.projects) {
-                                    const t = p.tasks.find(tsk => tsk.title.toLowerCase().includes(tTitle));
-                                    if (t) {
-                                        handleDeleteTask(p.id, t.id);
+                                for (const p of tempState.projects) {
+                                    const tIndex = p.tasks.findIndex(tsk => tsk.title.toLowerCase().includes(tTitle));
+                                    if (tIndex > -1) {
+                                        const t = p.tasks[tIndex];
+                                        // Cleanup calendar
+                                        Object.keys(tempState.calendar).forEach(date => {
+                                            tempState.calendar[date] = tempState.calendar[date].filter(tid => tid !== t.id);
+                                            if (tempState.calendar[date].length === 0) delete tempState.calendar[date];
+                                        });
+                                        p.tasks.splice(tIndex, 1);
                                         result = { status: `Deleted task: ${t.title}` };
                                         found = true;
                                         break;
                                     }
                                 }
                                 if (!found) result = { status: 'Task not found' };
-                            } else if (name === 'scheduleTask') {
+                            }
+                            else if (name === 'scheduleTask') {
                                 const tTitle = (args as any).taskTitle.toLowerCase();
                                 const date = (args as any).date;
                                 let foundTask = null;
-                                for (const p of dataRef.current.projects) {
+                                for (const p of tempState.projects) {
                                     const t = p.tasks.find(tsk => tsk.title.toLowerCase().includes(tTitle));
                                     if (t) { foundTask = t; break; }
                                 }
                                 if (foundTask) {
-                                    setData(prev => {
-                                        const currentTasks = prev.calendar[date] || [];
-                                        if (currentTasks.includes(foundTask.id)) return prev;
-                                        return {
-                                            ...prev,
-                                            calendar: { ...prev.calendar, [date]: [...currentTasks, foundTask.id] }
-                                        };
-                                    });
+                                    const currentTasks = tempState.calendar[date] || [];
+                                    if (!currentTasks.includes(foundTask.id)) {
+                                        tempState.calendar[date] = [...currentTasks, foundTask.id];
+                                    }
                                     result = { status: `Scheduled ${foundTask.title} for ${date}` };
                                 } else {
                                     result = { status: 'Task not found' };
                                 }
-                            } else if (name === 'removeTaskFromCalendar') {
+                            }
+                            else if (name === 'removeTaskFromCalendar') {
                                 const tTitle = (args as any).taskTitle.toLowerCase();
                                 const date = (args as any).date;
                                 let foundTask = null;
-                                for (const p of dataRef.current.projects) {
+                                for (const p of tempState.projects) {
                                     const t = p.tasks.find(tsk => tsk.title.toLowerCase().includes(tTitle));
                                     if (t) { foundTask = t; break; }
                                 }
                                 if (foundTask) {
-                                    handleRemoveTaskFromCalendar(date, foundTask.id);
+                                    if (tempState.calendar[date]) {
+                                        tempState.calendar[date] = tempState.calendar[date].filter(id => id !== foundTask.id);
+                                    }
                                     result = { status: `Removed ${foundTask.title} from ${date}` };
                                 } else {
                                     result = { status: 'Task not found' };
@@ -532,6 +665,14 @@ export default function App() {
                             name,
                             response: { result }
                         });
+                    }
+
+                    // Apply batched updates
+                    if (hasChanges) {
+                        setData(tempState);
+                        if (expandedProjectIdRef.current) {
+                            setExpandedProjectId(expandedProjectIdRef.current);
+                        }
                     }
                     
                     sessionPromise.then(session => session.sendToolResponse({ functionResponses: responses }));
@@ -556,11 +697,27 @@ export default function App() {
                 }
             },
             onclose: () => {
-                setIsAiConnected(false);
+                console.log("Gemini Session Closed");
+                // When session ends, go back to waiting for wake word if feature is still enabled
+                if (shouldRestartWaitingRef.current) {
+                    // We need a slight delay to let the mic release from the previous getUserMedia call
+                    setTimeout(() => {
+                        startWakeWordListener();
+                    }, 500);
+                } else {
+                    setAiMode('OFF');
+                }
             },
             onerror: (e) => {
                 console.error("Gemini Live Error", e);
-                setIsAiConnected(false);
+                // On error, try to go back to waiting
+                if (shouldRestartWaitingRef.current) {
+                    setTimeout(() => {
+                         startWakeWordListener();
+                    }, 500);
+                } else {
+                    setAiMode('OFF');
+                }
             }
         }
       });
@@ -569,18 +726,21 @@ export default function App() {
 
     } catch (e) {
         console.error("Failed to connect to AI", e);
-        setIsAiConnected(false);
+        setAiMode('OFF');
+        startWakeWordListener(); // Fallback
     }
   };
 
-  const disconnectAi = async () => {
-    if (sessionRef.current) {
-        const session = await sessionRef.current;
-        session.close();
+  const toggleAi = () => {
+    if (aiMode === 'OFF') {
+        // Start process: OFF -> WAITING
+        startWakeWordListener();
+    } else {
+        // Stop process: WAITING/ACTIVE -> OFF
+        shouldRestartWaitingRef.current = false; // Prevent auto-restart
+        fullAiCleanup();
+        setAiMode('OFF');
     }
-    inputContextRef.current?.close();
-    audioContextRef.current?.close();
-    setIsAiConnected(false);
   };
 
   // --- Computed ---
@@ -701,15 +861,31 @@ export default function App() {
                <div className="h-6 w-px bg-gray-300 mx-2"></div>
 
                <button
-                  onClick={isAiConnected ? disconnectAi : connectToAi}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all shadow-sm ${
-                    isAiConnected 
-                      ? 'bg-red-100 text-red-600 hover:bg-red-200 animate-pulse' 
+                  onClick={toggleAi}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all shadow-sm min-w-[140px] justify-center ${
+                    aiMode === 'ACTIVE'
+                      ? 'bg-red-100 text-red-600 hover:bg-red-200 animate-pulse border border-red-200' 
+                      : aiMode === 'WAITING'
+                      ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200'
                       : 'bg-blue-600 text-white hover:bg-blue-700'
                   }`}
                >
-                  {isAiConnected ? <MicOff size={16} /> : <Mic size={16} />}
-                  <span className="font-medium text-sm">{isAiConnected ? 'Listening...' : 'AI Voice'}</span>
+                  {aiMode === 'ACTIVE' ? (
+                      <>
+                        <Mic size={16} className="animate-bounce" />
+                        <span className="font-medium text-sm">Kevin is listening...</span>
+                      </>
+                  ) : aiMode === 'WAITING' ? (
+                      <>
+                        <Ear size={16} />
+                        <span className="font-medium text-sm">Say "Hey Kevin"</span>
+                      </>
+                  ) : (
+                      <>
+                        <MicOff size={16} />
+                        <span className="font-medium text-sm">AI Voice</span>
+                      </>
+                  )}
                </button>
 
                <Button variant="secondary" size="sm" icon={<Download size={16}/>} onClick={() => storageService.exportToJson(data)}>
