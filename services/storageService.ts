@@ -61,5 +61,12 @@ export const storageService = {
     document.body.appendChild(downloadAnchorNode);
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
+  },
+
+  validateData: (data: any): data is AppData => {
+    if (!data || typeof data !== 'object') return false;
+    if (!Array.isArray(data.projects)) return false;
+    if (typeof data.calendar !== 'object') return false;
+    return true;
   }
 };

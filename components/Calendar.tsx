@@ -1,5 +1,12 @@
 import React from 'react';
-import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek, eachDayOfInterval, isSameMonth, isToday } from 'date-fns';
+import format from 'date-fns/format';
+import startOfMonth from 'date-fns/startOfMonth';
+import endOfMonth from 'date-fns/endOfMonth';
+import startOfWeek from 'date-fns/startOfWeek';
+import endOfWeek from 'date-fns/endOfWeek';
+import eachDayOfInterval from 'date-fns/eachDayOfInterval';
+import isSameMonth from 'date-fns/isSameMonth';
+import isToday from 'date-fns/isToday';
 import { useDroppable } from '@dnd-kit/core';
 import { Task, Project } from '../types';
 import { X } from 'lucide-react';
