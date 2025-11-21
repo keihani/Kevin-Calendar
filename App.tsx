@@ -199,6 +199,7 @@ export default function App() {
   const expandedProjectIdRef = useRef<string | null>(expandedProjectId); // Ref for currently selected project
   
   // AI Logic Refs
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const inputContextRef = useRef<AudioContext | null>(null);
   const sessionRef = useRef<any>(null);
@@ -358,19 +359,34 @@ export default function App() {
 
   // --- AI Integration ---
 
+  const disconnectGemini = () => {
+      // Stop media stream (Mic)
+      if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach(track => track.stop());
+          mediaStreamRef.current = null;
+      }
+      // Close audio contexts (Speakers/Processing)
+      if (inputContextRef.current) {
+          inputContextRef.current.close().catch(console.error);
+          inputContextRef.current = null;
+      }
+      if (audioContextRef.current) {
+          audioContextRef.current.close().catch(console.error);
+          audioContextRef.current = null;
+      }
+      sessionRef.current = null; 
+  };
+
   const fullAiCleanup = () => {
     if (sessionRef.current) {
         sessionRef.current.then((s: any) => s.close()).catch(() => {});
-        sessionRef.current = null;
     }
+    disconnectGemini();
     if (recognitionRef.current) {
+        recognitionRef.current.onend = null;
         recognitionRef.current.stop();
         recognitionRef.current = null;
     }
-    inputContextRef.current?.close();
-    audioContextRef.current?.close();
-    inputContextRef.current = null;
-    audioContextRef.current = null;
   };
 
   const startWakeWordListener = () => {
@@ -452,7 +468,8 @@ export default function App() {
       outputNode.connect(audioContextRef.current.destination);
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
+      mediaStreamRef.current = stream;
+
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
@@ -465,7 +482,7 @@ export default function App() {
           When asked to select a task, select the project containing it.
           If the user says "delete this project" or "delete the selected project", use the deleteCurrentProject tool.
           If the user asks to perform multiple actions (e.g. "create 2 tasks"), call the tools multiple times sequentially.
-          If the user says "Bye Kevin" or "Goodbye", acknowledge briefly and then the session will end.`,
+          If the user says "Bye Kevin", "Goodbye", or "Stop listening", stop speaking and the session will end.`,
           tools: tools,
         },
         callbacks: {
@@ -488,10 +505,10 @@ export default function App() {
                 // 1. Check for "Bye Kevin" command in user input
                 if (msg.serverContent?.inputTranscription) {
                     const text = msg.serverContent.inputTranscription.text;
-                    if (text && text.toLowerCase().includes("bye kevin")) {
+                    if (text && (text.toLowerCase().includes("bye kevin") || text.toLowerCase().includes("goodbye") || text.toLowerCase().includes("stop listening"))) {
                          console.log("Bye Kevin detected, closing session...");
                          sessionPromise.then(s => s.close());
-                         // We don't return here, we let it play any final audio (like "Goodbye!")
+                         // We don't return here, we let it play any final audio
                     }
                 }
 
@@ -707,18 +724,24 @@ export default function App() {
             },
             onclose: () => {
                 console.log("Gemini Session Closed");
+                disconnectGemini(); // Clean up all audio resources immediately
+                
                 // If the global voice feature is still enabled, go back to listening for "Hey Kevin"
                 if (isVoiceEnabledRef.current) {
+                    setAiMode('WAITING');
+                    // Small delay to ensure browser releases mic lock
                     setTimeout(() => {
                         startWakeWordListener();
-                    }, 500);
+                    }, 200);
                 } else {
                     setAiMode('OFF');
                 }
             },
             onerror: (e) => {
                 console.error("Gemini Live Error", e);
+                disconnectGemini();
                 if (isVoiceEnabledRef.current) {
+                    setAiMode('WAITING');
                     setTimeout(() => {
                          startWakeWordListener();
                     }, 500);
