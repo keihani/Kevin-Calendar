@@ -475,6 +475,9 @@ export default function App() {
         config: {
           responseModalities: [Modality.AUDIO],
           inputAudioTranscription: {}, // Enable receiving the user's transcript
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } }, // Male Voice
+          },
           systemInstruction: `You are a helpful assistant for "Kevin Task Manager". 
           Current Date: ${new Date().toISOString().split('T')[0]}.
           You can help the user manage projects and tasks.
@@ -482,7 +485,7 @@ export default function App() {
           When asked to select a task, select the project containing it.
           If the user says "delete this project" or "delete the selected project", use the deleteCurrentProject tool.
           If the user asks to perform multiple actions (e.g. "create 2 tasks"), call the tools multiple times sequentially.
-          If the user says "Bye Kevin", "Goodbye", or "Stop listening", stop speaking and the session will end.`,
+          If the user says "Bye Kevin", "Goodbye", or "Stop listening", stop speaking immediately.`,
           tools: tools,
         },
         callbacks: {
@@ -507,8 +510,14 @@ export default function App() {
                     const text = msg.serverContent.inputTranscription.text;
                     if (text && (text.toLowerCase().includes("bye kevin") || text.toLowerCase().includes("goodbye") || text.toLowerCase().includes("stop listening"))) {
                          console.log("Bye Kevin detected, closing session...");
+                         // Stop any currently playing audio sources to silence AI immediately
+                         sourcesRef.current.forEach(source => {
+                             try { source.stop(); } catch (e) {}
+                         });
+                         sourcesRef.current.clear();
+
                          sessionPromise.then(s => s.close());
-                         // We don't return here, we let it play any final audio
+                         return; // Stop processing
                     }
                 }
 
@@ -729,10 +738,10 @@ export default function App() {
                 // If the global voice feature is still enabled, go back to listening for "Hey Kevin"
                 if (isVoiceEnabledRef.current) {
                     setAiMode('WAITING');
-                    // Small delay to ensure browser releases mic lock
+                    // Increased delay to ensure browser releases mic lock completely
                     setTimeout(() => {
                         startWakeWordListener();
-                    }, 200);
+                    }, 500);
                 } else {
                     setAiMode('OFF');
                 }
