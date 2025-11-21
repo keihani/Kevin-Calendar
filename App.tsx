@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -12,6 +12,9 @@ import { format, addMonths, subMonths } from 'date-fns';
 import { Project, Task, AppData } from './types';
 import { storageService } from './services/storageService';
 
+// Google GenAI
+import { GoogleGenAI, LiveServerMessage, Modality, FunctionDeclaration, Type, Blob as GenAIBlob } from '@google/genai';
+
 // Components
 import { ProjectBoard } from './components/ProjectBoard';
 import { CalendarView } from './components/Calendar';
@@ -19,13 +22,164 @@ import { Modal } from './components/ui/Modal';
 import { Button } from './components/ui/Button';
 
 // Icons
-import { Download, ChevronLeft, ChevronRight, Calendar as CalendarIcon, Trash2 } from 'lucide-react';
+import { Download, ChevronLeft, ChevronRight, Calendar as CalendarIcon, Trash2, Mic, MicOff } from 'lucide-react';
+
+// --- Audio Helper Functions ---
+function createBlob(data: Float32Array): GenAIBlob {
+  const l = data.length;
+  const int16 = new Int16Array(l);
+  for (let i = 0; i < l; i++) {
+    int16[i] = data[i] * 32768;
+  }
+  // Simple PCM format without headers
+  let binary = '';
+  const bytes = new Uint8Array(int16.buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+
+  return {
+    data: base64,
+    mimeType: 'audio/pcm;rate=16000',
+  };
+}
+
+function decode(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
+// --- Tool Definitions ---
+const tools: { functionDeclarations: FunctionDeclaration[] }[] = [
+  {
+    functionDeclarations: [
+      {
+        name: 'createProject',
+        description: 'Create a new project with a name, optional description and color.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            projectName: { type: Type.STRING },
+            description: { type: Type.STRING },
+            color: { type: Type.STRING, description: "Hex color code (e.g. #ff0000) or generic name (red, blue)" }
+          },
+          required: ['projectName']
+        }
+      },
+      {
+        name: 'createTask',
+        description: 'Create a new task within a specific project.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            projectName: { type: Type.STRING, description: 'Name of the project to add the task to' },
+            taskTitle: { type: Type.STRING },
+            description: { type: Type.STRING }
+          },
+          required: ['projectName', 'taskTitle']
+        }
+      },
+      {
+        name: 'selectProject',
+        description: 'Select and expand a project by its name to show its tasks.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            projectName: { type: Type.STRING, description: 'The fuzzy name of the project' }
+          },
+          required: ['projectName']
+        }
+      },
+      {
+        name: 'deleteProject',
+        description: 'Delete a project by name.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            projectName: { type: Type.STRING }
+          },
+          required: ['projectName']
+        }
+      },
+      {
+        name: 'deleteCurrentProject',
+        description: 'Delete the currently selected (expanded) project. Use this when the user says "delete the selected project" or "delete this project".',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {},
+        }
+      },
+      {
+        name: 'deleteTask',
+        description: 'Delete a task by title.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            taskTitle: { type: Type.STRING }
+          },
+          required: ['taskTitle']
+        }
+      },
+      {
+        name: 'scheduleTask',
+        description: 'Assign a task to a specific date on the calendar.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            taskTitle: { type: Type.STRING, description: 'The title of the task' },
+            date: { type: Type.STRING, description: 'Date in YYYY-MM-DD format' }
+          },
+          required: ['taskTitle', 'date']
+        }
+      },
+      {
+        name: 'removeTaskFromCalendar',
+        description: 'Remove a task from a specific date on the calendar.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            taskTitle: { type: Type.STRING },
+            date: { type: Type.STRING, description: 'Date in YYYY-MM-DD format' }
+          },
+          required: ['taskTitle', 'date']
+        }
+      }
+    ]
+  }
+];
 
 export default function App() {
   // --- State ---
   const [data, setData] = useState<AppData>({ projects: [], calendar: {} });
   const [currentDate, setCurrentDate] = useState(new Date());
   const [activeDragTask, setActiveDragTask] = useState<Task | null>(null);
+  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
 
   // Modals
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
@@ -37,48 +191,30 @@ export default function App() {
   const [isDayModalOpen, setIsDayModalOpen] = useState(false);
   const [selectedDateForModal, setSelectedDateForModal] = useState<Date | null>(null);
 
+  // AI State
+  const [isAiConnected, setIsAiConnected] = useState(false);
+  const dataRef = useRef<AppData>(data); // Ref to access current data in callbacks
+  const expandedProjectIdRef = useRef<string | null>(expandedProjectId); // Ref for currently selected project
+
   // --- Effects ---
   useEffect(() => {
     const loaded = storageService.loadData();
     setData(loaded);
+    if (loaded.projects.length > 0) {
+        setExpandedProjectId(loaded.projects[0].id);
+    }
   }, []);
 
   useEffect(() => {
     if (data.projects.length > 0 || Object.keys(data.calendar).length > 0) {
       storageService.saveData(data);
     }
+    dataRef.current = data; // Update ref whenever data changes
   }, [data]);
 
-  // --- Computed ---
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 8, // 8px movement required before drag starts
-      },
-    })
-  );
-
-  const tasksByDate = useMemo(() => {
-    const map: Record<string, Task[]> = {};
-    Object.entries(data.calendar).forEach(([date, taskIds]) => {
-      map[date] = (taskIds as string[])
-        .map(id => {
-          for (const p of data.projects) {
-            const t = p.tasks.find(task => task.id === id);
-            if (t) return t;
-          }
-          return null;
-        })
-        .filter((t): t is Task => t !== null);
-    });
-    return map;
-  }, [data]);
-
-  const selectedDayTasks = useMemo(() => {
-    if (!selectedDateForModal) return [];
-    const dateStr = format(selectedDateForModal, 'yyyy-MM-dd');
-    return tasksByDate[dateStr] || [];
-  }, [selectedDateForModal, tasksByDate]);
+  useEffect(() => {
+    expandedProjectIdRef.current = expandedProjectId;
+  }, [expandedProjectId]);
 
   // --- Handlers: Project ---
   const handleSaveProject = (e: React.FormEvent<HTMLFormElement>) => {
@@ -108,7 +244,6 @@ export default function App() {
   };
 
   const handleDeleteProject = (id: string) => {
-    if (!confirm('Delete project and all its tasks?')) return;
     setData(prev => {
       // Also cleanup calendar entries
       const project = prev.projects.find(p => p.id === id);
@@ -125,6 +260,10 @@ export default function App() {
         calendar: newCalendar
       };
     });
+    
+    if (expandedProjectId === id) {
+        setExpandedProjectId(null);
+    }
   };
 
   // --- Handlers: Task ---
@@ -169,7 +308,6 @@ export default function App() {
   };
 
   const handleDeleteTask = (projectId: string, taskId: string) => {
-    if (!confirm('Delete task?')) return;
     setData(prev => {
       // Cleanup calendar
       const newCalendar = { ...prev.calendar };
@@ -187,6 +325,294 @@ export default function App() {
       };
     });
   };
+
+  const handleRemoveTaskFromCalendar = (date: string, taskId: string) => {
+    setData(prev => ({
+      ...prev,
+      calendar: {
+        ...prev.calendar,
+        [date]: prev.calendar[date].filter(id => id !== taskId)
+      }
+    }));
+  };
+
+  // --- AI Integration ---
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const inputContextRef = useRef<AudioContext | null>(null);
+  const sessionRef = useRef<any>(null);
+  const nextStartTimeRef = useRef<number>(0);
+  const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+
+  const connectToAi = async () => {
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      
+      // Audio Contexts
+      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+      inputContextRef.current = new AudioContext({ sampleRate: 16000 });
+      audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+      const outputNode = audioContextRef.current.createGain();
+      outputNode.connect(audioContextRef.current.destination);
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      const sessionPromise = ai.live.connect({
+        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+        config: {
+          responseModalities: [Modality.AUDIO],
+          systemInstruction: `You are a helpful assistant for "Kevin Task Manager". 
+          Current Date: ${new Date().toISOString().split('T')[0]}.
+          You can help the user manage projects and tasks.
+          You can create, delete, and schedule tasks and projects using the provided tools.
+          When asked to select a task, select the project containing it.
+          If the user says "delete this project" or "delete the selected project", use the deleteCurrentProject tool.`,
+          tools: tools,
+        },
+        callbacks: {
+            onopen: () => {
+                setIsAiConnected(true);
+                // Setup Input Stream
+                const ctx = inputContextRef.current!;
+                const source = ctx.createMediaStreamSource(stream);
+                const processor = ctx.createScriptProcessor(4096, 1, 1);
+                
+                processor.onaudioprocess = (e) => {
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const blob = createBlob(inputData);
+                    sessionPromise.then(session => session.sendRealtimeInput({ media: blob }));
+                };
+                
+                source.connect(processor);
+                processor.connect(ctx.destination);
+            },
+            onmessage: async (msg: LiveServerMessage) => {
+                // Handle Tool Calls
+                if (msg.toolCall) {
+                    const responses = [];
+                    for (const fc of msg.toolCall.functionCalls) {
+                        const { name, args, id } = fc;
+                        let result = { status: 'ok' };
+                        
+                        try {
+                            // Execute Tool Logic against current data (dataRef.current)
+                            if (name === 'createProject') {
+                                const pName = (args as any).projectName;
+                                const desc = (args as any).description || '';
+                                let color = (args as any).color || '#3b82f6';
+                                
+                                // Simple color mapping if user says "Red"
+                                const colors: Record<string, string> = {
+                                    red: '#ef4444', blue: '#3b82f6', green: '#10b981', 
+                                    yellow: '#f59e0b', purple: '#8b5cf6', orange: '#f97316',
+                                    pink: '#ec4899', gray: '#6b7280'
+                                };
+                                if (colors[color.toLowerCase()]) color = colors[color.toLowerCase()];
+
+                                const newProject: Project = {
+                                    id: crypto.randomUUID(),
+                                    name: pName,
+                                    color: color,
+                                    details: desc,
+                                    tasks: []
+                                };
+                                setData(prev => ({ ...prev, projects: [...prev.projects, newProject] }));
+                                setExpandedProjectId(newProject.id);
+                                result = { status: `Created project: ${pName}` };
+                            } else if (name === 'createTask') {
+                                const pName = (args as any).projectName.toLowerCase();
+                                const tTitle = (args as any).taskTitle;
+                                const desc = (args as any).description || '';
+                                
+                                const project = dataRef.current.projects.find(p => p.name.toLowerCase().includes(pName));
+                                if (project) {
+                                    const newTask: Task = {
+                                        id: crypto.randomUUID(),
+                                        projectId: project.id,
+                                        title: tTitle,
+                                        description: desc
+                                    };
+                                    setData(prev => ({
+                                        ...prev,
+                                        projects: prev.projects.map(p => {
+                                            if (p.id !== project.id) return p;
+                                            return { ...p, tasks: [...p.tasks, newTask] };
+                                        })
+                                    }));
+                                    result = { status: `Added task "${tTitle}" to project "${project.name}"` };
+                                } else {
+                                    result = { status: `Project "${pName}" not found` };
+                                }
+                            } else if (name === 'selectProject') {
+                                const pName = (args as any).projectName.toLowerCase();
+                                const project = dataRef.current.projects.find(p => p.name.toLowerCase().includes(pName));
+                                if (project) {
+                                    setExpandedProjectId(project.id);
+                                    result = { status: `Selected project: ${project.name}` };
+                                } else {
+                                    result = { status: 'Project not found' };
+                                }
+                            } else if (name === 'deleteProject') {
+                                const pName = (args as any).projectName.toLowerCase();
+                                const project = dataRef.current.projects.find(p => p.name.toLowerCase().includes(pName));
+                                if (project) {
+                                    handleDeleteProject(project.id);
+                                    result = { status: `Deleted project: ${project.name}` };
+                                } else {
+                                    result = { status: 'Project not found' };
+                                }
+                            } else if (name === 'deleteCurrentProject') {
+                                const currentId = expandedProjectIdRef.current;
+                                if (currentId) {
+                                    const project = dataRef.current.projects.find(p => p.id === currentId);
+                                    if (project) {
+                                        handleDeleteProject(currentId);
+                                        result = { status: `Deleted selected project: ${project.name}` };
+                                    } else {
+                                        result = { status: 'Project ID found but data missing' };
+                                    }
+                                } else {
+                                    result = { status: 'No project is currently selected' };
+                                }
+                            } else if (name === 'deleteTask') {
+                                const tTitle = (args as any).taskTitle.toLowerCase();
+                                let found = false;
+                                for (const p of dataRef.current.projects) {
+                                    const t = p.tasks.find(tsk => tsk.title.toLowerCase().includes(tTitle));
+                                    if (t) {
+                                        handleDeleteTask(p.id, t.id);
+                                        result = { status: `Deleted task: ${t.title}` };
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found) result = { status: 'Task not found' };
+                            } else if (name === 'scheduleTask') {
+                                const tTitle = (args as any).taskTitle.toLowerCase();
+                                const date = (args as any).date;
+                                let foundTask = null;
+                                for (const p of dataRef.current.projects) {
+                                    const t = p.tasks.find(tsk => tsk.title.toLowerCase().includes(tTitle));
+                                    if (t) { foundTask = t; break; }
+                                }
+                                if (foundTask) {
+                                    setData(prev => {
+                                        const currentTasks = prev.calendar[date] || [];
+                                        if (currentTasks.includes(foundTask.id)) return prev;
+                                        return {
+                                            ...prev,
+                                            calendar: { ...prev.calendar, [date]: [...currentTasks, foundTask.id] }
+                                        };
+                                    });
+                                    result = { status: `Scheduled ${foundTask.title} for ${date}` };
+                                } else {
+                                    result = { status: 'Task not found' };
+                                }
+                            } else if (name === 'removeTaskFromCalendar') {
+                                const tTitle = (args as any).taskTitle.toLowerCase();
+                                const date = (args as any).date;
+                                let foundTask = null;
+                                for (const p of dataRef.current.projects) {
+                                    const t = p.tasks.find(tsk => tsk.title.toLowerCase().includes(tTitle));
+                                    if (t) { foundTask = t; break; }
+                                }
+                                if (foundTask) {
+                                    handleRemoveTaskFromCalendar(date, foundTask.id);
+                                    result = { status: `Removed ${foundTask.title} from ${date}` };
+                                } else {
+                                    result = { status: 'Task not found' };
+                                }
+                            }
+                        } catch (err) {
+                            console.error("Tool Execution Error", err);
+                            result = { status: 'Error executing command' };
+                        }
+                        
+                        responses.push({
+                            id,
+                            name,
+                            response: { result }
+                        });
+                    }
+                    
+                    sessionPromise.then(session => session.sendToolResponse({ functionResponses: responses }));
+                }
+
+                // Handle Audio Output
+                const base64Audio = msg.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+                if (base64Audio) {
+                    const ctx = audioContextRef.current!;
+                    const buffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
+                    
+                    const source = ctx.createBufferSource();
+                    source.buffer = buffer;
+                    source.connect(outputNode); // Connect to the previously created gain node
+                    
+                    nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
+                    source.start(nextStartTimeRef.current);
+                    nextStartTimeRef.current += buffer.duration;
+                    
+                    sourcesRef.current.add(source);
+                    source.onended = () => sourcesRef.current.delete(source);
+                }
+            },
+            onclose: () => {
+                setIsAiConnected(false);
+            },
+            onerror: (e) => {
+                console.error("Gemini Live Error", e);
+                setIsAiConnected(false);
+            }
+        }
+      });
+      
+      sessionRef.current = sessionPromise;
+
+    } catch (e) {
+        console.error("Failed to connect to AI", e);
+        setIsAiConnected(false);
+    }
+  };
+
+  const disconnectAi = async () => {
+    if (sessionRef.current) {
+        const session = await sessionRef.current;
+        session.close();
+    }
+    inputContextRef.current?.close();
+    audioContextRef.current?.close();
+    setIsAiConnected(false);
+  };
+
+  // --- Computed ---
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // 8px movement required before drag starts
+      },
+    })
+  );
+
+  const tasksByDate = useMemo(() => {
+    const map: Record<string, Task[]> = {};
+    Object.entries(data.calendar).forEach(([date, taskIds]) => {
+      map[date] = (taskIds as string[])
+        .map(id => {
+          for (const p of data.projects) {
+            const t = p.tasks.find(task => task.id === id);
+            if (t) return t;
+          }
+          return null;
+        })
+        .filter((t): t is Task => t !== null);
+    });
+    return map;
+  }, [data]);
+
+  const selectedDayTasks = useMemo(() => {
+    if (!selectedDateForModal) return [];
+    const dateStr = format(selectedDateForModal, 'yyyy-MM-dd');
+    return tasksByDate[dateStr] || [];
+  }, [selectedDateForModal, tasksByDate]);
 
   // --- Handlers: Drag & Drop ---
   const handleDragStart = (event: DragStartEvent) => {
@@ -224,16 +650,6 @@ export default function App() {
     }
   };
 
-  const handleRemoveTaskFromCalendar = (date: string, taskId: string) => {
-    setData(prev => ({
-      ...prev,
-      calendar: {
-        ...prev.calendar,
-        [date]: prev.calendar[date].filter(id => id !== taskId)
-      }
-    }));
-  };
-
   const getProject = (id: string) => data.projects.find(p => p.id === id);
 
   return (
@@ -244,12 +660,14 @@ export default function App() {
         <div className="hidden md:block">
           <ProjectBoard
             projects={data.projects}
+            expandedProjectId={expandedProjectId}
+            onToggleProject={(id) => setExpandedProjectId(expandedProjectId === id ? null : id)}
             onAddProject={() => { setEditingProject(null); setIsProjectModalOpen(true); }}
             onEditProject={(p) => { setEditingProject(p); setIsProjectModalOpen(true); }}
-            onDeleteProject={handleDeleteProject}
+            onDeleteProject={(id) => { if(confirm("Delete project?")) handleDeleteProject(id); }}
             onAddTask={(pid) => { setEditingTask({ task: null, projectId: pid }); setIsTaskModalOpen(true); }}
             onEditTask={(t) => { setEditingTask({ task: t, projectId: t.projectId }); setIsTaskModalOpen(true); }}
-            onDeleteTask={handleDeleteTask}
+            onDeleteTask={(pid, tid) => { if(confirm("Delete task?")) handleDeleteTask(pid, tid); }}
           />
         </div>
 
@@ -281,6 +699,18 @@ export default function App() {
                </div>
 
                <div className="h-6 w-px bg-gray-300 mx-2"></div>
+
+               <button
+                  onClick={isAiConnected ? disconnectAi : connectToAi}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all shadow-sm ${
+                    isAiConnected 
+                      ? 'bg-red-100 text-red-600 hover:bg-red-200 animate-pulse' 
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
+               >
+                  {isAiConnected ? <MicOff size={16} /> : <Mic size={16} />}
+                  <span className="font-medium text-sm">{isAiConnected ? 'Listening...' : 'AI Voice'}</span>
+               </button>
 
                <Button variant="secondary" size="sm" icon={<Download size={16}/>} onClick={() => storageService.exportToJson(data)}>
                   Export

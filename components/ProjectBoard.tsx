@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Project, Task } from '../types';
 import { TaskItem } from './TaskItem';
 import { Button } from './ui/Button';
-import { Plus, MoreVertical, Trash2, Edit } from 'lucide-react';
+import { Plus, Trash2, Edit } from 'lucide-react';
 
 interface ProjectBoardProps {
   projects: Project[];
+  expandedProjectId: string | null;
+  onToggleProject: (id: string) => void;
   onAddProject: () => void;
   onEditProject: (project: Project) => void;
   onDeleteProject: (id: string) => void;
@@ -16,6 +18,8 @@ interface ProjectBoardProps {
 
 export const ProjectBoard: React.FC<ProjectBoardProps> = ({
   projects,
+  expandedProjectId,
+  onToggleProject,
   onAddProject,
   onEditProject,
   onDeleteProject,
@@ -23,12 +27,6 @@ export const ProjectBoard: React.FC<ProjectBoardProps> = ({
   onEditTask,
   onDeleteTask
 }) => {
-  const [expandedProject, setExpandedProject] = useState<string | null>(projects.length > 0 ? projects[0].id : null);
-
-  const toggleProject = (id: string) => {
-    setExpandedProject(expandedProject === id ? null : id);
-  };
-
   return (
     <div className="h-full flex flex-col bg-gray-50 border-r border-gray-200 w-full md:w-80 lg:w-96 flex-shrink-0 transition-all">
       <div className="p-4 border-b border-gray-200 flex items-center justify-between bg-white">
@@ -49,14 +47,14 @@ export const ProjectBoard: React.FC<ProjectBoardProps> = ({
             key={project.id}
             className={`
               rounded-xl border transition-all duration-200 overflow-hidden
-              ${expandedProject === project.id ? 'bg-white shadow-md ring-1 ring-gray-200' : 'bg-white shadow-sm hover:shadow hover:border-gray-300'}
+              ${expandedProjectId === project.id ? 'bg-white shadow-md ring-1 ring-gray-200' : 'bg-white shadow-sm hover:shadow hover:border-gray-300'}
             `}
-            style={{ borderColor: expandedProject === project.id ? project.color : undefined }}
+            style={{ borderColor: expandedProjectId === project.id ? project.color : undefined }}
           >
             {/* Project Header */}
             <div
               className="p-3 flex items-center justify-between cursor-pointer select-none"
-              onClick={() => toggleProject(project.id)}
+              onClick={() => onToggleProject(project.id)}
             >
               <div className="flex items-center gap-3 overflow-hidden">
                 <div
@@ -76,7 +74,7 @@ export const ProjectBoard: React.FC<ProjectBoardProps> = ({
             </div>
 
             {/* Expanded Content */}
-            {expandedProject === project.id && (
+            {expandedProjectId === project.id && (
               <div className="px-3 pb-3 pt-1 bg-gray-50/50 border-t border-gray-100">
                  {/* Project Actions */}
                  <div className="flex justify-end gap-2 mb-3">
