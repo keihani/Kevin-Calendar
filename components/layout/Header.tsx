@@ -1,6 +1,6 @@
 import React from 'react';
 import { format } from 'date-fns';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Upload, Download } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Upload, Download, Menu } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { storageService } from '../../services/storageService';
 import { AppData } from '../../types';
@@ -10,6 +10,7 @@ interface HeaderProps {
   onPrevMonth: () => void;
   onNextMonth: () => void;
   onOpenImport: () => void;
+  onToggleSidebar: () => void;
   data: AppData;
 }
 
@@ -18,43 +19,53 @@ export const Header: React.FC<HeaderProps> = ({
   onPrevMonth, 
   onNextMonth, 
   onOpenImport, 
+  onToggleSidebar,
   data 
 }) => {
   return (
-    <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shadow-sm z-20">
-      <div className="flex items-center gap-3">
-        <div className="p-2 bg-blue-100 text-blue-600 rounded-lg">
-          <CalendarIcon size={24} />
+    <header className="bg-white border-b border-gray-200 px-4 md:px-6 py-3 flex items-center justify-between shadow-sm z-20 flex-nowrap">
+      {/* Left Section */}
+      <div className="flex items-center gap-2 md:gap-3 min-w-0">
+        <button 
+          onClick={onToggleSidebar}
+          className="p-2 -ml-2 rounded-lg text-gray-600 hover:bg-gray-100 md:hidden focus:outline-none focus:ring-2 focus:ring-gray-200"
+          aria-label="Toggle Menu"
+        >
+          <Menu size={24} />
+        </button>
+
+        <div className="p-1.5 md:p-2 bg-blue-100 text-blue-600 rounded-lg flex-shrink-0">
+          <CalendarIcon size={20} className="md:w-6 md:h-6" />
         </div>
-        <div>
-          <h1 className="text-xl font-bold text-gray-900 tracking-tight">Kevin Calendar</h1>
-          <p className="text-xs text-gray-500">Manage your timeline</p>
+        <div className="min-w-0">
+          <h1 className="text-lg md:text-xl font-bold text-gray-900 tracking-tight truncate">Kevin Calendar</h1>
+          <p className="text-xs text-gray-500 hidden sm:block">Manage your timeline</p>
         </div>
       </div>
 
-      <div className="flex items-center gap-4">
-        <div className="flex items-center bg-gray-100 rounded-lg p-1">
-          <button onClick={onPrevMonth} className="p-1.5 hover:bg-white rounded-md transition shadow-sm hover:shadow text-gray-600">
-            <ChevronLeft size={18} />
-          </button>
-          <span className="px-4 font-semibold text-sm w-32 text-center select-none">
-            {format(currentDate, 'MMMM yyyy')}
-          </span>
-          <button onClick={onNextMonth} className="p-1.5 hover:bg-white rounded-md transition shadow-sm hover:shadow text-gray-600">
-            <ChevronRight size={18} />
-          </button>
-        </div>
-        
-        <div className="h-6 w-px bg-gray-300 mx-2"></div>
-
-        <div className="flex items-center gap-2">
-          <Button variant="secondary" size="sm" icon={<Upload size={16} />} onClick={onOpenImport}>
-            Import
-          </Button>
-          <Button variant="secondary" size="sm" icon={<Download size={16} />} onClick={() => storageService.exportToJson(data)}>
-            Export
-          </Button>
-        </div>
+      {/* Center Section (Month Nav) */}
+      <div className="flex items-center bg-gray-100 rounded-lg p-1 mx-2 flex-shrink-0">
+        <button onClick={onPrevMonth} className="p-1 hover:bg-white rounded-md transition shadow-sm hover:shadow text-gray-600">
+          <ChevronLeft size={16} />
+        </button>
+        <span className="px-2 md:px-4 font-semibold text-xs md:text-sm w-24 md:w-32 text-center select-none truncate">
+          {format(currentDate, 'MMM yyyy')}
+        </span>
+        <button onClick={onNextMonth} className="p-1 hover:bg-white rounded-md transition shadow-sm hover:shadow text-gray-600">
+          <ChevronRight size={16} />
+        </button>
+      </div>
+      
+      {/* Right Section (Actions) */}
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <Button variant="secondary" size="sm" onClick={onOpenImport} className="px-2 md:px-3">
+          <Upload size={16} className="sm:mr-2" />
+          <span className="hidden sm:inline">Import</span>
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => storageService.exportToJson(data)} className="px-2 md:px-3">
+          <Download size={16} className="sm:mr-2" />
+          <span className="hidden sm:inline">Export</span>
+        </Button>
       </div>
     </header>
   );

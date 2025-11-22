@@ -11,6 +11,9 @@ export const useAppLogic = () => {
   const [activeDragTask, setActiveDragTask] = useState<Task | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
 
+  // --- UI State ---
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
   // --- Modal State ---
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
@@ -39,6 +42,9 @@ export const useAppLogic = () => {
 
   // --- Helpers ---
   const getProject = (id: string) => data.projects.find(p => p.id === id);
+
+  // --- Actions: UI ---
+  const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
 
   // --- Actions: Projects ---
   const openNewProjectModal = () => {
@@ -209,6 +215,7 @@ export const useAppLogic = () => {
     currentDate,
     activeDragTask,
     expandedProjectId,
+    isSidebarOpen,
     
     // Modal Visibility
     isProjectModalOpen, setIsProjectModalOpen,
@@ -222,6 +229,8 @@ export const useAppLogic = () => {
     selectedDateForModal,
 
     // Actions
+    setIsSidebarOpen,
+    toggleSidebar,
     setExpandedProjectId,
     openNewProjectModal,
     openEditProjectModal,

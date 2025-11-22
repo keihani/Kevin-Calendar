@@ -31,10 +31,10 @@ export default function App() {
       onDragStart={logic.handleDragStart} 
       onDragEnd={logic.handleDragEnd}
     >
-      <div className="flex h-screen w-screen bg-white text-gray-800 font-sans overflow-hidden">
+      <div className="flex h-screen w-screen bg-white text-gray-800 font-sans overflow-hidden relative">
         
-        {/* Sidebar */}
-        <div className="hidden md:block">
+        {/* Sidebar (Desktop) */}
+        <div className="hidden md:block h-full z-10 relative shadow-sm">
           <ProjectBoard
             projects={logic.data.projects}
             expandedProjectId={logic.expandedProjectId}
@@ -49,16 +49,37 @@ export default function App() {
         </div>
 
         {/* Main Content */}
-        <div className="flex-1 flex flex-col h-full min-w-0 bg-gray-50/30">
+        <div className="flex-1 flex flex-col h-full min-w-0 bg-gray-50/30 relative">
           <Header 
             currentDate={logic.currentDate}
             onPrevMonth={logic.prevMonth}
             onNextMonth={logic.nextMonth}
             onOpenImport={() => logic.setIsImportModalOpen(true)}
+            onToggleSidebar={logic.toggleSidebar}
             data={logic.data}
           />
 
-          <div className="flex-1 p-6 overflow-hidden">
+          {/* Sidebar (Mobile - Vertical Stack) 
+              This renders ABOVE the calendar when open, pushing the calendar down.
+              This allows dragging tasks from the top board to the bottom calendar.
+          */}
+          {logic.isSidebarOpen && (
+            <div className="md:hidden h-[45vh] min-h-[300px] shrink-0 border-b border-gray-200 shadow-lg z-20 bg-white relative overflow-hidden flex flex-col transition-all">
+              <ProjectBoard
+                projects={logic.data.projects}
+                expandedProjectId={logic.expandedProjectId}
+                onToggleProject={(id) => logic.setExpandedProjectId(logic.expandedProjectId === id ? null : id)}
+                onAddProject={() => { logic.setIsSidebarOpen(false); logic.openNewProjectModal(); }}
+                onEditProject={(p) => { logic.setIsSidebarOpen(false); logic.openEditProjectModal(p); }}
+                onDeleteProject={logic.deleteProject}
+                onAddTask={(pid) => { logic.setIsSidebarOpen(false); logic.openNewTaskModal(pid); }}
+                onEditTask={(t) => { logic.setIsSidebarOpen(false); logic.openEditTaskModal(t); }}
+                onDeleteTask={logic.deleteTask}
+              />
+            </div>
+          )}
+
+          <div className="flex-1 p-4 md:p-6 overflow-hidden flex flex-col">
             <CalendarView
               currentDate={logic.currentDate}
               tasksByDate={logic.tasksByDate}

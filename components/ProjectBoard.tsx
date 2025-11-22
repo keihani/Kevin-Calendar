@@ -28,7 +28,7 @@ export const ProjectBoard: React.FC<ProjectBoardProps> = ({
   onDeleteTask
 }) => {
   return (
-    <div className="h-full flex flex-col bg-gray-50 border-r border-gray-200 w-full md:w-80 lg:w-96 flex-shrink-0 transition-all">
+    <div className="h-full flex flex-col bg-gray-50 md:border-r border-gray-200 w-full md:w-80 lg:w-96 flex-shrink-0 transition-all">
       <div className="p-4 border-b border-gray-200 flex items-center justify-between bg-white">
         <h2 className="text-lg font-bold text-gray-800">Projects</h2>
         <Button size="sm" onClick={onAddProject} icon={<Plus size={16} />}>
