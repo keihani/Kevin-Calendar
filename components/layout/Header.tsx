@@ -26,29 +26,29 @@ export const Header: React.FC<HeaderProps> = ({
     <header className="bg-white border-b border-gray-200 shadow-sm z-20 flex flex-col relative">
       
       {/* Top Brand Section */}
-      <div className="w-full flex justify-center items-center py-3 border-b border-gray-100 bg-gray-50/30 backdrop-blur-sm gap-3">
-        <img src="https://raw.githubusercontent.com/keihani/sources/main/Kevin_Calendar.png" alt="Kevin Calendar Icon" className="w-8 h-8 object-contain" />
-        <h1 className="text-xl md:text-2xl font-bold text-gray-900 tracking-tight leading-none">
-          Kevin Calendar
-        </h1>
+      <div className="w-full relative flex justify-center items-center py-3 border-b border-gray-100 bg-gray-50/30 backdrop-blur-sm">
+        {/* Menu Button (Moved to First Layer) */}
+        <button 
+            onClick={onToggleSidebar}
+            className="absolute left-4 p-2 rounded-lg text-gray-600 hover:bg-gray-100 md:hidden focus:outline-none focus:ring-2 focus:ring-gray-200"
+            aria-label="Toggle Menu"
+          >
+            <Menu size={24} />
+        </button>
+
+        <div className="flex items-center gap-3">
+          <img src="https://raw.githubusercontent.com/keihani/sources/main/Kevin_Calendar.png" alt="Kevin Calendar Icon" className="w-8 h-8 object-contain" />
+          <h1 className="text-xl md:text-2xl font-bold text-gray-900 tracking-tight leading-none">
+            Kevin Calendar
+          </h1>
+        </div>
       </div>
 
       {/* Toolbar Section */}
       <div className="px-4 md:px-6 py-3 flex items-center justify-between flex-nowrap">
         
-        {/* Left Section (Menu & Subtitle) */}
+        {/* Left Section (Spacer for balance) */}
         <div className="flex items-center gap-3 min-w-0 w-1/4">
-          <button 
-            onClick={onToggleSidebar}
-            className="p-2 -ml-2 rounded-lg text-gray-600 hover:bg-gray-100 md:hidden focus:outline-none focus:ring-2 focus:ring-gray-200"
-            aria-label="Toggle Menu"
-          >
-            <Menu size={24} />
-          </button>
-
-          <p className="text-xs text-gray-500 hidden sm:block font-medium truncate">
-            Manage your timeline
-          </p>
         </div>
 
         {/* Center Section (Month Nav) */}

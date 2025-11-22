@@ -205,6 +205,11 @@ export const useAppLogic = () => {
           if (currentTasks.includes(taskId)) return prev;
           return { ...prev, calendar: { ...prev.calendar, [dateStr]: [...currentTasks, taskId] } };
         });
+        
+        // Close sidebar on mobile drop if it was open
+        if (isSidebarOpen) {
+            setIsSidebarOpen(false);
+        }
       }
     }
   };
