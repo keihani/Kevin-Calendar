@@ -1,7 +1,5 @@
 {
   "name": "Kevin Task Manager",
   "description": "A professional project management tool featuring project organization, task creation, and a drag-and-drop calendar allocation system.",
-  "requestFramePermissions": [
-    "microphone"
-  ]
+  "requestFramePermissions": []
 }
