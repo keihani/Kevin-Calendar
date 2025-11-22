@@ -21,12 +21,3 @@ export interface AppData {
   projects: Project[];
   calendar: CalendarData;
 }
-
-export type DragType = 'TASK';
-
-export interface DragData {
-  type: DragType;
-  task: Task;
-  origin: 'PROJECT' | 'CALENDAR';
-  date?: string; // If dragging from calendar
-}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { DragStartEvent, DragEndEvent } from '@dnd-kit/core';
 import { format, addMonths, subMonths } from 'date-fns';
 import { AppData, Project, Task } from '../types';
