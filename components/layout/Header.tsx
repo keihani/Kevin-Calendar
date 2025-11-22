@@ -27,7 +27,7 @@ export const Header: React.FC<HeaderProps> = ({
           <CalendarIcon size={24} />
         </div>
         <div>
-          <h1 className="text-xl font-bold text-gray-900 tracking-tight">Kevin Task Manager</h1>
+          <h1 className="text-xl font-bold text-gray-900 tracking-tight">Kevin Calendar</h1>
           <p className="text-xs text-gray-500">Manage your timeline</p>
         </div>
       </div>
