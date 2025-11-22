@@ -27,7 +27,7 @@ export const Header: React.FC<HeaderProps> = ({
       
       {/* Top Brand Section */}
       <div className="w-full flex justify-center items-center py-3 border-b border-gray-100 bg-gray-50/30 backdrop-blur-sm gap-3">
-        <img src="./sources/calendar_ico.png" alt="Kevin Calendar Icon" className="w-8 h-8 object-contain" />
+        <img src="https://raw.githubusercontent.com/keihani/sources/main/Kevin_Calendar.png" alt="Kevin Calendar Icon" className="w-8 h-8 object-contain" />
         <h1 className="text-xl md:text-2xl font-bold text-gray-900 tracking-tight leading-none">
           Kevin Calendar
         </h1>
